@@ -26,6 +26,7 @@ type GrpcUnaryServer struct {
 	Logger             *log.Logger
 	Services           []GrpcUnaryService
 	Port               int64
+	Interceptor        grpc.UnaryServerInterceptor
 }
 
 // RegisterService 注册服务
@@ -37,7 +38,6 @@ func (s *GrpcUnaryServer) init() {
 	if s.Logger == nil {
 		s.Logger = log.Default()
 	}
-	// 端口未设置默认为80
 	if s.Port == 0 {
 		s.Logger.Panic("端口未设置")
 	}
@@ -52,41 +52,46 @@ func (s *GrpcUnaryServer) init() {
 	}
 }
 
+// 拦截器
+func (s *GrpcUnaryServer) getInterceptor() grpc.UnaryServerInterceptor {
+	if s.Interceptor == nil {
+		s.Interceptor = func(ctx context.Context, req interface{}, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (interface{}, error) {
+			// recover处理
+			defer func() {
+				if err := recover(); err != nil {
+					buf := make([]byte, 1<<16)
+					runtime.Stack(buf, false)
+					s.Logger.Println(string(buf))
+				}
+			}()
+
+			var resp interface{}
+			var err error
+			// 接口调用前拦截器
+			for _, i := range s.BeforeInterceptors {
+				err = i.HandleFunc(&ctx, req, info)
+				if err != nil {
+					s.Logger.Panic(err)
+					return nil, err
+				}
+			}
+			startTime := time.Now()
+			resp, err = handler(ctx, req)
+			s.Logger.Println(fmt.Sprintf("接口请求时间: %d ms", time.Since(startTime).Milliseconds()))
+			// 接口调用后处理
+			for _, i := range s.AfterInterceptors {
+				resp, err = i.HandleFunc(ctx, req, info, resp, err)
+			}
+			return resp, err
+		}
+	}
+	return s.Interceptor
+}
+
 // Start 启动服务
 func (s *GrpcUnaryServer) Start() {
 	s.init()
-	// 拦截器
-	_interceptor := func(ctx context.Context, req interface{}, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (interface{}, error) {
-		// recover处理
-		defer func() {
-			if err := recover(); err != nil {
-				buf := make([]byte, 1<<16)
-				runtime.Stack(buf, false)
-				s.Logger.Println(string(buf))
-			}
-		}()
-
-		var resp interface{}
-		var err error
-		// 接口调用前拦截器
-		for _, i := range s.BeforeInterceptors {
-			err = i.HandleFunc(&ctx, req, info)
-			if err != nil {
-				s.Logger.Panic(err)
-				return nil, err
-			}
-		}
-		startTime := time.Now()
-		resp, err = handler(ctx, req)
-		s.Logger.Println(fmt.Sprintf("接口请求时间: %d ms", time.Since(startTime).Milliseconds()))
-		// 接口调用后处理
-		for _, i := range s.AfterInterceptors {
-			resp, err = i.HandleFunc(ctx, req, info, resp, err)
-		}
-		return resp, err
-	}
-
-	s.ServerOpts = append(s.ServerOpts, grpc.UnaryInterceptor(_interceptor))
+	s.ServerOpts = append(s.ServerOpts, grpc.UnaryInterceptor(s.getInterceptor()))
 	s.svr = grpc.NewServer(s.ServerOpts...)
 
 	// 注册service到server

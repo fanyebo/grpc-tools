@@ -1,15 +1,11 @@
 package server
 
 import (
-	"context"
 	"fmt"
 	"github.com/fanyebo/grpc-tools/interceptor"
+	"google.golang.org/grpc"
 	"log"
 	"net"
-	"runtime"
-	"time"
-
-	"google.golang.org/grpc"
 )
 
 type GrpcUnaryService struct {
@@ -18,15 +14,13 @@ type GrpcUnaryService struct {
 }
 
 type GrpcUnaryServer struct {
-	svr                *grpc.Server
-	Listener           *net.Listener
-	BeforeInterceptors []interceptor.BeforeInterceptor
-	AfterInterceptors  []interceptor.AfterInterceptor
-	ServerOpts         []grpc.ServerOption
-	Logger             *log.Logger
-	Services           []GrpcUnaryService
-	Port               int64
-	Interceptor        grpc.UnaryServerInterceptor
+	svr         *grpc.Server
+	Listener    *net.Listener
+	ServerOpts  []grpc.ServerOption
+	Logger      *log.Logger
+	Services    []GrpcUnaryService
+	Port        int64
+	Interceptor *interceptor.UnaryServerInterceptorFactory
 }
 
 // RegisterService 注册服务
@@ -50,48 +44,17 @@ func (s *GrpcUnaryServer) init() {
 		}
 		s.Listener = &listener
 	}
-}
 
-// 拦截器
-func (s *GrpcUnaryServer) getInterceptor() grpc.UnaryServerInterceptor {
+	// 拦截器设置
 	if s.Interceptor == nil {
-		s.Interceptor = func(ctx context.Context, req interface{}, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (interface{}, error) {
-			// recover处理
-			defer func() {
-				if err := recover(); err != nil {
-					buf := make([]byte, 1<<16)
-					runtime.Stack(buf, false)
-					s.Logger.Println(string(buf))
-				}
-			}()
-
-			var resp interface{}
-			var err error
-			// 接口调用前拦截器
-			for _, i := range s.BeforeInterceptors {
-				err = i.HandleFunc(&ctx, req, info)
-				if err != nil {
-					s.Logger.Panic(err)
-					return nil, err
-				}
-			}
-			startTime := time.Now()
-			resp, err = handler(ctx, req)
-			s.Logger.Println(fmt.Sprintf("接口请求时间: %d ms", time.Since(startTime).Milliseconds()))
-			// 接口调用后处理
-			for _, i := range s.AfterInterceptors {
-				resp, err = i.HandleFunc(ctx, req, info, resp, err)
-			}
-			return resp, err
-		}
+		s.Interceptor = new(interceptor.UnaryServerInterceptorFactory)
 	}
-	return s.Interceptor
 }
 
 // Start 启动服务
 func (s *GrpcUnaryServer) Start() {
 	s.init()
-	s.ServerOpts = append(s.ServerOpts, grpc.UnaryInterceptor(s.getInterceptor()))
+	s.ServerOpts = append(s.ServerOpts, grpc.UnaryInterceptor(s.Interceptor.Gen()))
 	s.svr = grpc.NewServer(s.ServerOpts...)
 
 	// 注册service到server

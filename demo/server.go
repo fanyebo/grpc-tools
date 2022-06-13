@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"github.com/fanyebo/grpc-tools/demo/pb/hello"
+	"github.com/fanyebo/grpc-tools/interceptor"
 	"github.com/fanyebo/grpc-tools/server"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/metadata"
@@ -14,12 +15,14 @@ type ServiceHello struct {
 }
 
 func (s *ServiceHello) SayHello(ctx context.Context, req *hello.SayHelloReq) (*hello.SayHelloResp, error) {
+	md, ok := metadata.FromIncomingContext(ctx)
+	if ok {
+		fmt.Println("metadata: ", md)
+	}
 	return &hello.SayHelloResp{Reply: fmt.Sprintf("Hello %s", req.Name)}, nil
 }
 
-type HelloBeforeInterceptor struct{}
-
-func (i *HelloBeforeInterceptor) HandleFunc(ctx *context.Context, req interface{}, info *grpc.UnaryServerInfo) error {
+func HelloBeforeInterceptor(ctx *context.Context, req interface{}, info *grpc.UnaryServerInfo) error {
 	md, ok := metadata.FromIncomingContext(*ctx)
 	if !ok {
 		md = metadata.New(map[string]string{})
@@ -29,9 +32,7 @@ func (i *HelloBeforeInterceptor) HandleFunc(ctx *context.Context, req interface{
 	return nil
 }
 
-type HellAfterInterceptor struct{}
-
-func (i *HellAfterInterceptor) HandleFunc(ctx context.Context, req interface{}, info *grpc.UnaryServerInfo, resp interface{}, err error) (interface{}, error) {
+func HellAfterInterceptor(ctx context.Context, req interface{}, info *grpc.UnaryServerInfo, resp interface{}, err error) (interface{}, error) {
 	md, ok := metadata.FromIncomingContext(ctx)
 	if !ok {
 		md = metadata.New(map[string]string{})
@@ -43,8 +44,10 @@ func (i *HellAfterInterceptor) HandleFunc(ctx context.Context, req interface{}, 
 
 func main() {
 	svr := server.GrpcUnaryServer{Port: 80}
-	svr.BeforeInterceptors = append(svr.BeforeInterceptors, &HelloBeforeInterceptor{})
-	svr.AfterInterceptors = append(svr.AfterInterceptors, &HellAfterInterceptor{})
+	svr.Interceptor = &interceptor.UnaryServerInterceptorFactory{
+		BeforeInterceptors: []interceptor.BeforeInterceptor{HelloBeforeInterceptor},
+		AfterInterceptors:  []interceptor.AfterInterceptor{HellAfterInterceptor},
+	}
 	service := new(ServiceHello)
 	svr.RegisterService(&hello.Hello_ServiceDesc, service)
 	svr.Start()
